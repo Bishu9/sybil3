@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Instructor | Blink + Emotion Detection</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils"></script>
+  <style>
+    body {
+      margin: 0;
+      font-family: 'Inter', sans-serif;
+      background: linear-gradient(-45deg, #0f0c29, #302b63, #24243e);
+      background-size: 400% 400%;
+      animation: gradientBG 10s ease infinite;
+      color: white;
+      text-align: center;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    @keyframes gradientBG {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+    .video-wrapper {
+      position: relative;
+      width: 640px;
+      height: 480px;
+      margin: 20px;
+      border-radius: 1rem;
+      overflow: hidden;
+      box-shadow: 0 0 40px rgba(0, 0, 0, 0.4);
+      background: rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    video, canvas {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    #expressionBox {
+      position: absolute;
+      top: 15px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 8px 18px;
+      border-radius: 12px;
+      font-weight: 600;
+      background: rgba(255,255,255,0.15);
+      color: #00ffcc;
+      backdrop-filter: blur(6px);
+      box-shadow: 0 0 10px rgba(0,255,204,0.3);
+    }
+    button {
+      margin-top: 1rem;
+      padding: 10px 18px;
+      border-radius: 12px;
+      border: none;
+      background-color: #4f46e5;
+      color: white;
+      font-weight: 600;
+      transition: 0.3s;
+    }
+    button:hover { background-color: #4338ca; transform: scale(1.05); }
+    footer {
+      position: fixed;
+      bottom: 15px;
+      right: 20px;
+      font-size: 0.9rem;
+      opacity: 0.85;
+    }
+  </style>
+</head>
+<body>
+  <h1 class="text-4xl font-bold drop-shadow-lg">AI Instructor 👨‍🏫</h1>
+  <p class="opacity-80 mb-3">Emotion + Blink Detection (fixed)</p>
+
+  <div class="video-wrapper">
+    <div id="expressionBox">Initializing...</div>
+    <video class="input_video"></video>
+    <canvas class="output_canvas"></canvas>
+  </div>
+
+  <button id="startBtn">🎥 Start Camera</button>
+
+  <footer>
+    Made with ❤️ by <a href="https://github.com/Bishu9" target="_blank" class="underline">UNIVERSE 🐣</a>
+  </footer>
+
+  <script>
+    const videoElement = document.querySelector('.input_video');
+    const canvasElement = document.querySelector('.output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    const expressionBox = document.getElementById('expressionBox');
+    const startBtn = document.getElementById('startBtn');
+    let camera = null;
+    let lastBlink = 0;
+    let blinkCooldown = 800; // ms between blinks
+    let lastExpression = "Neutral 🙂";
+
+    function speak(text) {
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.rate = 1;
+      speechSynthesis.speak(utter);
+    }
+
+    // EAR = Eye Aspect Ratio for blink detection
+    function calcEAR(landmarks, left=true) {
+      let top, bottom;
+      if (left) {
+        top = landmarks[159].y + landmarks[160].y + landmarks[158].y;
+        bottom = landmarks[145].y + landmarks[144].y + landmarks[153].y;
+      } else {
+        top = landmarks[386].y + landmarks[385].y + landmarks[387].y;
+        bottom = landmarks[374].y + landmarks[373].y + landmarks[380].y;
+      }
+      const avgTop = top / 3;
+      const avgBottom = bottom / 3;
+      return Math.abs(avgBottom - avgTop);
+    }
+
+    function detectExpression(landmarks) {
+      const mouthTop = landmarks[13].y;
+      const mouthBottom = landmarks[14].y;
+      const mouthGap = Math.abs(mouthBottom - mouthTop);
+      if (mouthGap > 0.035) return "Happy 😊";
+      if (mouthGap < 0.015) return "Serious 😐";
+      return "Neutral 🙂";
+    }
+
+    const faceMesh = new FaceMesh({ locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}` });
+
+    faceMesh.setOptions({
+      maxNumFaces: 1,
+      refineLandmarks: true,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+
+    faceMesh.onResults(results => {
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+      if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+        const landmarks = results.multiFaceLandmarks[0];
+
+        drawConnectors(canvasCtx, landmarks, FACEMESH_TESSELATION, {color: '#00ffcc', lineWidth: 1});
+
+        // Detect blink
+        const leftEAR = calcEAR(landmarks, true);
+        const rightEAR = calcEAR(landmarks, false);
+        const avgEAR = (leftEAR + rightEAR) / 2;
+        const blinkThreshold = 0.008;
+        const now = Date.now();
+
+        if (avgEAR < blinkThreshold && now - lastBlink > blinkCooldown) {
+          lastBlink = now;
+          expressionBox.innerText = "You blinked 👁️";
+          speak("You blinked");
+        }
+
+        // Detect emotion
+        const expr = detectExpression(landmarks);
+        if (expr !== lastExpression && now - lastBlink > 600) {
+          lastExpression = expr;
+          expressionBox.innerText = `Expression: ${expr}`;
+          speak(`You look ${expr.replace(/[^a-zA-Z ]/g, '')}`);
+        }
+
+      } else {
+        expressionBox.innerText = "No face detected 😶";
+      }
+      canvasCtx.restore();
+    });
+
+    startBtn.onclick = () => {
+      if (camera) {
+        camera.stop();
+        camera = null;
+        startBtn.innerText = "🎥 Start Camera";
+        return;
+      }
+
+      camera = new Camera(videoElement, {
+        onFrame: async () => { await faceMesh.send({image: videoElement}); },
+        width: 640, height: 480
+      });
+      camera.start();
+      startBtn.innerText = "⏹ Stop Camera";
+    };
+  </script>
+</body>
+</html>
